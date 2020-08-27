@@ -8,7 +8,10 @@ const mongoose = require('mongoose');
 const session = require('express-session');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
 const passportLocalMongoose = require('passport-local-mongoose');
+const findOrCreate = require('mongoose-findorcreate');
 
 const app = express();
 
@@ -21,7 +24,7 @@ app.use(bodyParser.urlencoded({
 
 //Initialising the express session and passport.js
 app.use(session({
-    secret: process.env.SECRET,
+    secret: process.env.CLIENT_SECRET,
     resave: false,
     saveUninitialized: false
 }));
@@ -40,16 +43,63 @@ const Schema = mongoose.Schema;
 
 const userSchema = new Schema({
     username: String,
-    password: String
+    password: String,
+    googleId: String,
+    facebookId: String,
+});
+
+const secretSchema = new Schema({
+    secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const User = mongoose.model('user', userSchema);
+const Secret = mongoose.model('secret', secretSchema);
 
 passport.use(new LocalStrategy(User.authenticate()));
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+
+passport.serializeUser(function (user, done) {
+    done(null, user.id);
+});
+
+passport.deserializeUser(function (id, done) {
+    User.findById(id, function (err, user) {
+        done(err, user);
+    });
+});
+
+passport.use(new GoogleStrategy({
+        clientID: process.env.CLIENT_ID,
+        clientSecret: process.env.CLIENT_SECRET,
+        callbackURL: "http://localhost:3000/auth/google/secrets"
+    },
+    function (accessToken, refreshToken, profile, cb) {
+        // console.log(profile);
+        User.findOrCreate({
+            googleId: profile.id
+        }, function (err, user) {
+            return cb(err, user);
+        });
+    }
+));
+
+passport.use(new FacebookStrategy({
+        clientID: process.env.FACEBOOK_APP_ID,
+        clientSecret: process.env.FACEBOOK_APP_SECRET,
+        callbackURL: "http://localhost:3000/auth/facebook/secrets"
+    },
+    function (accessToken, refreshToken, profile, cb) {
+        // console.log(profile);
+        User.findOrCreate({
+            facebookId: profile.id,
+            // username: profile.displayName
+        }, function (err, user) {
+            return cb(err, user);
+        });
+    }
+));
 
 
 // ROUTES
@@ -58,13 +108,63 @@ app.get('/', (req, res) => {
     res.render('home');
 });
 
+app.get('/auth/google',
+    passport.authenticate('google', {
+        scope: ['profile']
+    }));
+
+app.get('/auth/google/secrets',
+    passport.authenticate('google', {
+        failureRedirect: '/login'
+    }),
+    function (req, res) {
+        // Successful authentication, redirect to secrets.
+        res.redirect('/secrets');
+    });
+
+app.get('/auth/facebook',
+    passport.authenticate('facebook'));
+
+app.get('/auth/facebook/secrets',
+    passport.authenticate('facebook', {
+        failureRedirect: '/login'
+    }),
+    function (req, res) {
+        // Successful authentication, redirect to secrets.
+        res.redirect('/secrets');
+    });
+
 app.get('/secrets', (req, res) => {
     if (req.isAuthenticated()) {
-        res.render('secrets');
+        Secret.find({}, (err, secret) => {
+            if (err) {
+                console.log(err);
+            } else {
+                res.render('secrets', {
+                    secrets: secret
+                });
+            }
+        });
     } else {
         res.redirect('/login');
     }
 });
+
+app.route('/submit')
+    .get((req, res) => {
+        if (req.isAuthenticated()) {
+            res.render('submit');
+        } else {
+            res.redirect('/login');
+        }
+    })
+    .post((req, res) => {
+
+        const secret = new Secret({
+            secret: req.body.secret
+        });
+        secret.save(() => res.redirect('/secrets'));
+    });
 
 app.route('/register')
     .get((req, res) => {
